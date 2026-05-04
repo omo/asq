@@ -20,7 +20,7 @@ User question
        │
        ▼
 ┌──────────────────┐
-│  Gemini API      │  ← POST /v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse
+│  Gemini API      │  ← POST /v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse
 │  (grounded)      │     request: { contents, tools: [{ googleSearch: {} }] }
 └────────┬─────────┘
          │ SSE stream (data: {...} events)

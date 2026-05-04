@@ -4,6 +4,7 @@ mod config;
 mod gemini;
 
 use anyhow::Result;
+use cli::Engine;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,9 +13,23 @@ async fn main() -> Result<()> {
     let cli = cli::Cli::parse();
     let config = config::Config::from_env()?;
 
-    let _brave = brave::BraveClient::new();
-    let gemini = gemini::GeminiClient::new(config.gemini_api_key);
+    match cli.engine {
+        Engine::Gemini => run_gemini(cli, config).await?,
+        Engine::Brave => run_brave(cli, config).await?,
+    }
 
+    Ok(())
+}
+
+async fn run_gemini(cli: cli::Cli, _config: config::Config) -> Result<()> {
+    // API key from CLI arg takes precedence over env/config
+    let api_key = cli
+        .gemini_api_key
+        .clone()
+        .or(_config.gemini_api_key)
+        .ok_or_else(|| anyhow::anyhow!("GEMINI_API_KEY must be set"))?;
+
+    let gemini = gemini::GeminiClient::new(api_key);
     let mut rx = gemini.ask_stream(&cli.question).await?;
 
     use gemini::GeminiStreamEvent;
@@ -40,6 +55,34 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_brave(cli: cli::Cli, _config: config::Config) -> Result<()> {
+    let api_key = cli
+        .brave_api_key
+        .clone()
+        .or(_config.brave_api_key)
+        .ok_or_else(|| anyhow::anyhow!("BRAVE_API_KEY must be set (use --brave-api-key or set BRAVE_API_KEY env var)"))?;
+
+    let brave = brave::BraveClient::new(api_key);
+    let mut rx = brave.ask_stream(&cli.question).await?;
+
+    use brave::BraveStreamEvent;
+
+    while let Some(event) = rx.recv().await {
+        match event? {
+            BraveStreamEvent::Text(text) => {
+                print!("{text}");
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            }
+            BraveStreamEvent::Done => {
+                println!();
             }
         }
     }

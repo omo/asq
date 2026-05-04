@@ -39,6 +39,7 @@ struct GoogleSearchTool {} // empty object
 /// A single SSE event from the streaming response.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
+#[serde(rename_all = "camelCase")]
 struct StreamEvent {
     candidates: Option<Vec<StreamCandidate>>,
     usage_metadata: Option<serde_json::Value>,
@@ -46,6 +47,7 @@ struct StreamEvent {
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
+#[serde(rename_all = "camelCase")]
 struct StreamCandidate {
     content: Option<StreamContent>,
     finish_reason: Option<String>,
@@ -54,6 +56,7 @@ struct StreamCandidate {
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
+#[serde(rename_all = "camelCase")]
 struct StreamContent {
     parts: Option<Vec<StreamPart>>,
 }
@@ -76,6 +79,7 @@ pub enum GeminiStreamEvent {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GroundingMetadata {
     pub grounding_chunks: Option<Vec<GroundingChunk>>,
     #[allow(dead_code)]
@@ -96,6 +100,7 @@ pub struct GroundingWeb {
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
+#[serde(rename_all = "camelCase")]
 pub struct GroundingSupport {
     pub segment: TextSegment,
     pub grounding_chunk_indices: Vec<usize>,
@@ -132,7 +137,7 @@ impl GeminiClient {
         query: &str,
     ) -> Result<mpsc::UnboundedReceiver<Result<GeminiStreamEvent>>> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={}",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse&key={}",
             self.api_key
         );
 
