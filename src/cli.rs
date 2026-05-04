@@ -18,14 +18,20 @@ pub struct Cli {
     /// Gemini API key (overrides GEMINI_API_KEY env var).
     #[arg(long, env = "GEMINI_API_KEY")]
     pub gemini_api_key: Option<String>,
+
+    /// Claude API key (overrides CLAUDE_API_KEY env var).
+    #[arg(long, env = "CLAUDE_API_KEY")]
+    pub claude_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum Engine {
     /// Google-grounded Gemini.
     Gemini,
-    /// Brave Web Search API.
+    /// Brave's AI chat model.
     Brave,
+    /// Anthropic's Claude Sonnet.
+    Claude,
 }
 
 impl Cli {

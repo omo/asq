@@ -1,4 +1,5 @@
 mod brave;
+mod claude;
 mod cli;
 mod config;
 mod gemini;
@@ -17,6 +18,7 @@ async fn main() -> Result<()> {
     match cli.engine {
         Engine::Gemini => run_gemini(cli, config).await?,
         Engine::Brave => run_brave(cli, config).await?,
+        Engine::Claude => run_claude(cli, config).await?,
     }
 
     Ok(())
@@ -62,6 +64,34 @@ async fn run_gemini(cli: cli::Cli, _config: config::Config) -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_claude(cli: cli::Cli, _config: config::Config) -> Result<()> {
+    let api_key = cli
+        .claude_api_key
+        .clone()
+        .or(_config.claude_api_key)
+        .ok_or_else(|| anyhow::anyhow!("CLAUDE_API_KEY must be set (use --claude-api-key or set CLAUDE_API_KEY env var)"))?;
+
+    let claude = claude::ClaudeClient::new(api_key);
+    let mut rx = claude.ask_stream(&cli.question).await?;
+
+    use claude::ClaudeStreamEvent;
+
+    while let Some(event) = rx.recv().await {
+        match event? {
+            ClaudeStreamEvent::Text(text) => {
+                print!("{text}");
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            }
+            ClaudeStreamEvent::Done => {
+                println!();
             }
         }
     }
