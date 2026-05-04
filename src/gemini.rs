@@ -95,6 +95,7 @@ pub struct GroundingChunk {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GroundingWeb {
     pub uri: String,
+    #[allow(dead_code)]
     pub title: String,
 }
 
@@ -125,6 +126,18 @@ impl GeminiClient {
         Self {
             api_key,
             client: reqwest::Client::new(),
+        }
+    }
+
+    /// Follow a Google grounding redirect URL and return the real destination URL.
+    ///
+    /// Google's grounding API returns redirect URLs through
+    /// `vertexaisearch.cloud.google.com`. This resolves them to the actual page.
+    pub async fn resolve_redirect(&self, url: &str) -> String {
+        // HEAD request with redirect following to get the final destination
+        match self.client.head(url).send().await {
+            Ok(resp) => resp.url().as_str().to_string(),
+            Err(_) => url.to_string(), // fall back to original URL
         }
     }
 

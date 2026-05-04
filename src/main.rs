@@ -5,6 +5,7 @@ mod gemini;
 
 use anyhow::Result;
 use cli::Engine;
+use futures_util::future::join_all;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -50,8 +51,14 @@ async fn run_gemini(cli: cli::Cli, _config: config::Config) -> Result<()> {
                     }
                     if let Some(chunks) = &meta.grounding_chunks {
                         println!("\nSources:");
-                        for chunk in chunks {
-                            println!("  • [{}]({})", chunk.web.title, chunk.web.uri);
+                        // Fire off all redirect resolutions concurrently
+                        let futures: Vec<_> = chunks
+                            .iter()
+                            .map(|chunk| gemini.resolve_redirect(&chunk.web.uri))
+                            .collect();
+                        let urls = join_all(futures).await;
+                        for url in &urls {
+                            println!("  {url}");
                         }
                     }
                 }
