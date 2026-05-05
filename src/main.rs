@@ -3,7 +3,6 @@ mod brave_types;
 mod claude;
 mod claude_types;
 mod cli;
-mod config;
 mod gemini;
 mod gemini_types;
 mod stream;
@@ -17,35 +16,20 @@ use tokio::sync::mpsc;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
+    load_env();
     let cli = cli::Cli::parse();
-    let config = config::Config::from_env()?;
 
     match cli.engine {
         Engine::Gemini => {
-            let key = get_api_key(
-                cli.gemini_api_key,
-                config.gemini_api_key,
-                "gemini-api-key",
-                "GEMINI_API_KEY",
-            )?;
+            let key = get_api_key(cli.gemini_api_key, "GEMINI_API_KEY")?;
             run::<gemini::GeminiClient>(&cli.question, key).await?;
         }
         Engine::Claude => {
-            let key = get_api_key(
-                cli.claude_api_key,
-                config.claude_api_key,
-                "claude-api-key",
-                "CLAUDE_API_KEY",
-            )?;
+            let key = get_api_key(cli.claude_api_key, "CLAUDE_API_KEY")?;
             run::<claude::ClaudeClient>(&cli.question, key).await?;
         }
         Engine::Brave => {
-            let key = get_api_key(
-                cli.brave_api_key,
-                config.brave_api_key,
-                "brave-api-key",
-                "BRAVE_API_KEY",
-            )?;
+            let key = get_api_key(cli.brave_api_key, "BRAVE_API_KEY")?;
             run::<brave::BraveClient>(&cli.question, key).await?;
         }
     }
@@ -53,18 +37,25 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+// ─── .env Loading ─────────────────────────────────────────────────────────
+
+/// Seed the environment from `$HOME/.env` (low priority) and project-local
+/// `.env` (high priority). This must run before clap parses args so that
+/// clap's `#[arg(env)]` picks up the values.
+fn load_env() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    dotenvy::from_filename(std::path::Path::new(&home).join(".env")).ok();
+    dotenvy::dotenv().ok();
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/// Resolve an API key from CLI arg → config, with a descriptive error.
-fn get_api_key(
-    cli_key: Option<String>,
-    config_key: Option<String>,
-    flag: &str,
-    env: &str,
-) -> Result<String> {
-    cli_key
-        .or(config_key)
-        .ok_or_else(|| anyhow::anyhow!("{env} must be set (use --{flag} or set {env})"))
+/// Resolve an API key, returning a descriptive error if missing.
+///
+/// The key comes from clap, which has already checked the `--flag` arg
+/// and the eponymous environment variable (thanks to `#[arg(env)]`).
+fn get_api_key(key: Option<String>, env: &str) -> Result<String> {
+    key.ok_or_else(|| anyhow::anyhow!("{env} must be set (use --{env} or set the {env} env var)"))
 }
 
 /// Run any engine: create the client, stream the response, and print it.
