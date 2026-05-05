@@ -1,4 +1,8 @@
 
+## WORKFLOW
+
+* DO NOT COMMIT until you are asked to do.
+
 ## Coding Guidelines
 
  * **Build things incrementally**.

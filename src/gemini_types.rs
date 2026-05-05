@@ -101,3 +101,68 @@ pub(crate) struct TextSegment {
     #[serde(default)]
     pub(crate) end_index: Option<usize>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_content_request_serializes() {
+        let req = GenerateContentRequest {
+            contents: vec![Content {
+                parts: vec![Part {
+                    text: "hello".into(),
+                }],
+            }],
+            tools: vec![Tool {
+                google_search: GoogleSearchTool {},
+            }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""text":"hello""#));
+        assert!(json.contains(r#""google_search":{}"#));
+    }
+
+    #[test]
+    fn stream_event_deserializes() {
+        let json = r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10}}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        let candidates = event.candidates.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].finish_reason.as_deref(), Some("STOP"));
+        let parts = candidates[0].content.as_ref().unwrap().parts.as_ref().unwrap();
+        assert_eq!(parts[0].text.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn grounding_metadata_deserializes() {
+        let json = r#"{"groundingChunks":[{"web":{"uri":"https://x.com","title":"X"}}],"webSearchQueries":["test"]}"#;
+        let meta: GroundingMetadata = serde_json::from_str(json).unwrap();
+        let chunks = meta.grounding_chunks.unwrap();
+        assert_eq!(chunks[0].web.uri, "https://x.com");
+        assert_eq!(chunks[0].web.title, "X");
+        assert_eq!(meta.web_search_queries.unwrap(), vec!["test"]);
+    }
+
+    #[test]
+    fn convert_grounding_tests() {
+        let meta = crate::gemini_types::GroundingMetadata {
+            grounding_chunks: Some(vec![
+                crate::gemini_types::GroundingChunk {
+                    web: crate::gemini_types::GroundingWeb {
+                        uri: "https://a.com".into(),
+                        title: "A".into(),
+                    },
+                },
+            ]),
+            grounding_supports: None,
+            web_search_queries: Some(vec!["q1".into()]),
+        };
+        // Note: convert_grounding is a free fn in the parent module.
+        // We import it from super to test the conversion logic.
+        let g = crate::gemini::convert_grounding(meta);
+        assert_eq!(g.web_search_queries, &["q1"]);
+        assert_eq!(g.sources.len(), 1);
+        assert_eq!(g.sources[0].uri, "https://a.com");
+    }
+}
