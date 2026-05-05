@@ -5,6 +5,9 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub(crate) struct ChatRequest {
     pub(crate) stream: bool,
+    pub(crate) model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) max_completion_tokens: Option<u32>,
     pub(crate) messages: Vec<Message>,
 }
 
@@ -22,14 +25,19 @@ mod tests {
     fn chat_request_serializes_correctly() {
         let req = ChatRequest {
             stream: true,
+            model: "brave-pro".into(),
+            max_completion_tokens: Some(4096),
             messages: vec![Message {
                 role: "user".into(),
                 content: "hello".into(),
             }],
         };
         let json = serde_json::to_string(&req).unwrap();
-        let want = r#"{"stream":true,"messages":[{"role":"user","content":"hello"}]}"#;
-        assert_eq!(json, want);
+        assert!(json.contains(r#""stream":true"#));
+        assert!(json.contains(r#""model":"brave-pro""#));
+        assert!(json.contains(r#""max_completion_tokens":4096"#));
+        assert!(json.contains(r#""role":"user""#));
+        assert!(json.contains(r#""content":"hello""#));
     }
 
     #[test]

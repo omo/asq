@@ -35,6 +35,8 @@ impl StreamClient for BraveClient {
 
         let request = ChatRequest {
             stream: true,
+            model: "brave-pro".to_string(),
+            max_completion_tokens: None,
             messages: vec![Message {
                 role: "user".to_string(),
                 content: query.to_string(),
@@ -118,15 +120,8 @@ impl BraveClient {
             // Extract text delta from choices[0].delta.content
             if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
                 for choice in choices {
-                    // Check finish_reason first
-                    if let Some(finish) = choice.get("finish_reason") {
-                        if finish.is_string() && finish.as_str().unwrap_or("") == "stop" {
-                            let _ = tx.send(Ok(StreamEvent::Done(None)));
-                            return Ok(());
-                        }
-                    }
-
-                    // Extract content delta
+                    // Extract content delta first — the final chunk often
+                    // carries both text and finish_reason.
                     if let Some(content) = choice
                         .get("delta")
                         .and_then(|d| d.get("content"))
@@ -140,6 +135,14 @@ impl BraveClient {
                             if tx.send(Ok(StreamEvent::Text(content.to_string()))).is_err() {
                                 return Ok(()); // receiver dropped
                             }
+                        }
+                    }
+
+                    // Check finish_reason after extracting text
+                    if let Some(finish) = choice.get("finish_reason") {
+                        if finish.is_string() && finish.as_str().unwrap_or("") == "stop" {
+                            let _ = tx.send(Ok(StreamEvent::Done(None)));
+                            return Ok(());
                         }
                     }
                 }
@@ -191,6 +194,18 @@ data: [DONE]
     async fn finish_reason_stop_emits_done_without_done_marker() {
         let data = br#"data: {"choices":[{"delta":{"content":"hello"}}]}
 data: {"choices":[{"finish_reason":"stop"}]}
+"#;
+        let events = parse_bytes(data).await;
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], StreamEvent::Text(s) if s == "hello"));
+        assert!(matches!(&events[1], StreamEvent::Done(None)));
+    }
+
+    #[tokio::test]
+    async fn text_and_finish_reason_in_same_chunk_emits_both() {
+        // The final SSE chunk carries both a text delta and
+        // finish_reason: "stop" inside the same choice object.
+        let data = br#"data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}
 "#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 2);
