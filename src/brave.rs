@@ -174,10 +174,10 @@ mod tests {
 
     #[tokio::test]
     async fn text_delta_emitted() {
-        let data = b"\
-data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\
-data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\
-data: [DONE]\n";
+        let data = br#"data: {"choices":[{"delta":{"content":"Hello "}}]}
+data: {"choices":[{"delta":{"content":"world"}}]}
+data: [DONE]
+"#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], StreamEvent::Text(s) if s == "Hello "));
@@ -189,9 +189,9 @@ data: [DONE]\n";
 
     #[tokio::test]
     async fn finish_reason_stop_emits_done_without_done_marker() {
-        let data = b"\
-data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\
-data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n";
+        let data = br#"data: {"choices":[{"delta":{"content":"hello"}}]}
+data: {"choices":[{"finish_reason":"stop"}]}
+"#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], StreamEvent::Text(s) if s == "hello"));
@@ -202,10 +202,10 @@ data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n";
 
     #[tokio::test]
     async fn usage_content_is_filtered() {
-        let data = b"\
-data: {\"choices\":[{\"delta\":{\"content\":\"<usage>token_count:42</usage>\"}}]}\n\
-data: {\"choices\":[{\"delta\":{\"content\":\"real text\"}}]}\n\
-data: [DONE]\n";
+        let data = br#"data: {"choices":[{"delta":{"content":"<usage>token_count:42</usage>"}}]}
+data: {"choices":[{"delta":{"content":"real text"}}]}
+data: [DONE]
+"#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], StreamEvent::Text(s) if s == "real text"));
@@ -216,9 +216,9 @@ data: [DONE]\n";
 
     #[tokio::test]
     async fn multiple_choices_each_produce_text() {
-        let data = b"\
-data: {\"choices\":[{\"delta\":{\"content\":\"a\"}},{\"delta\":{\"content\":\"b\"}}]}\n\
-data: [DONE]\n";
+        let data = br#"data: {"choices":[{"delta":{"content":"a"}},{"delta":{"content":"b"}}]}
+data: [DONE]
+"#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], StreamEvent::Text(s) if s == "a"));
@@ -230,8 +230,8 @@ data: [DONE]\n";
 
     #[tokio::test]
     async fn stream_ends_without_done_emits_done() {
-        let data = b"\
-data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n";
+        let data = br#"data: {"choices":[{"delta":{"content":"hello"}}]}
+"#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], StreamEvent::Text(s) if s == "hello"));
@@ -243,7 +243,8 @@ data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n";
     #[tokio::test]
     async fn malformed_json_sends_error() {
         let reader = tokio::io::BufReader::new(std::io::Cursor::new(
-            b"data: {not json}\n".to_vec(),
+            br#"data: {not json}
+"#.to_vec(),
         ));
         let (tx, mut rx) = mpsc::unbounded_channel();
         BraveClient::read_sse_stream(reader, tx).await.unwrap();
@@ -257,13 +258,14 @@ data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n";
 
     #[tokio::test]
     async fn empty_lines_and_event_lines_are_skipped() {
-        let data = b"\
-\n\
-event: ping\n\
-data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\
-\n\
-event: done\n\
-data: [DONE]\n";
+        let data = br#"
+
+event: ping
+data: {"choices":[{"delta":{"content":"hi"}}]}
+
+event: done
+data: [DONE]
+"#;
         let events = parse_bytes(data).await;
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], StreamEvent::Text(s) if s == "hi"));
