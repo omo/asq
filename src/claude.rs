@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
-use serde::Serialize;
+use async_trait::async_trait;
 use tokio::sync::mpsc;
+
+use crate::claude_types::{Message, MessagesRequest};
+use crate::stream::{StreamClient, StreamEvent};
 
 /// Claude API client using Anthropic's Messages API with streaming.
 pub struct ClaudeClient {
@@ -8,38 +11,9 @@ pub struct ClaudeClient {
     client: reqwest::Client,
 }
 
-// ─── Request structs ───────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct MessagesRequest {
-    model: String,
-    max_tokens: u32,
-    stream: bool,
-    messages: Vec<Message>,
-}
-
-#[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: String,
-}
-
-// ─── Public types ─────────────────────────────────────────────────────────
-
-/// An event yielded during streaming from Claude.
-#[derive(Debug)]
-pub enum ClaudeStreamEvent {
-    /// A text fragment to print immediately.
-    Text(String),
-    /// The response is complete.
-    Done,
-}
-
-// ─── Client implementation ─────────────────────────────────────────────────
-
-impl ClaudeClient {
-    /// Create a new Claude client.
-    pub fn new(api_key: String) -> Self {
+#[async_trait]
+impl StreamClient for ClaudeClient {
+    fn new(api_key: String) -> Self {
         Self {
             api_key,
             client: reqwest::Client::new(),
@@ -49,11 +23,11 @@ impl ClaudeClient {
     /// Ask a question using Claude Sonnet, returning a stream of events.
     ///
     /// Text events arrive as the model generates, followed by a final
-    /// `ClaudeStreamEvent::Done`.
-    pub async fn ask_stream(
+    /// `StreamEvent::Done`.
+    async fn ask_stream(
         &self,
         query: &str,
-    ) -> Result<mpsc::UnboundedReceiver<Result<ClaudeStreamEvent>>> {
+    ) -> Result<mpsc::UnboundedReceiver<Result<StreamEvent>>> {
         let url = "https://api.anthropic.com/v1/messages";
 
         let request = MessagesRequest {
@@ -103,17 +77,12 @@ impl ClaudeClient {
 ///   data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"..."}}
 async fn read_sse_stream(
     response: reqwest::Response,
-    tx: mpsc::UnboundedSender<Result<ClaudeStreamEvent>>,
+    tx: mpsc::UnboundedSender<Result<StreamEvent>>,
 ) -> Result<()> {
-    use futures_util::StreamExt;
+    use crate::stream::parse_data_line;
     use tokio::io::AsyncBufReadExt;
-    use tokio_util::io::StreamReader;
 
-    let stream = response.bytes_stream();
-    let reader = StreamReader::new(
-        stream.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
-    );
-    let mut lines = tokio::io::BufReader::new(reader).lines();
+    let mut lines = crate::stream::line_reader(response).lines();
 
     // Track the current event type (from `event:` lines)
     let mut current_event = String::new();
@@ -130,17 +99,11 @@ async fn read_sse_stream(
             continue;
         }
 
-        // SSE data lines
-        let json_str = match line.strip_prefix("data: ") {
+        let json_str = match parse_data_line(&line) {
             Some(s) => s,
             None => continue,
         };
 
-        if json_str.is_empty() {
-            continue;
-        }
-
-        // Parse the JSON payload
         let payload: serde_json::Value = match serde_json::from_str(json_str) {
             Ok(v) => v,
             Err(e) => {
@@ -160,17 +123,14 @@ async fn read_sse_stream(
                     .and_then(|t| t.as_str())
                 {
                     if !text.is_empty() {
-                        if tx
-                            .send(Ok(ClaudeStreamEvent::Text(text.to_string())))
-                            .is_err()
-                        {
+                        if tx.send(Ok(StreamEvent::Text(text.to_string()))).is_err() {
                             return Ok(()); // receiver dropped
                         }
                     }
                 }
             }
             "message_stop" => {
-                let _ = tx.send(Ok(ClaudeStreamEvent::Done));
+                let _ = tx.send(Ok(StreamEvent::Done(None)));
                 return Ok(());
             }
             _ => {
@@ -181,6 +141,6 @@ async fn read_sse_stream(
     }
 
     // Stream ended without message_stop
-    let _ = tx.send(Ok(ClaudeStreamEvent::Done));
+    let _ = tx.send(Ok(StreamEvent::Done(None)));
     Ok(())
 }

@@ -1,12 +1,17 @@
 mod brave;
+mod brave_types;
 mod claude;
+mod claude_types;
 mod cli;
 mod config;
 mod gemini;
+mod gemini_types;
+mod stream;
 
 use anyhow::Result;
 use cli::Engine;
-use futures_util::future::join_all;
+use stream::{GroundingData, StreamClient, StreamEvent};
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,113 +21,88 @@ async fn main() -> Result<()> {
     let config = config::Config::from_env()?;
 
     match cli.engine {
-        Engine::Gemini => run_gemini(cli, config).await?,
-        Engine::Brave => run_brave(cli, config).await?,
-        Engine::Claude => run_claude(cli, config).await?,
-    }
-
-    Ok(())
-}
-
-async fn run_gemini(cli: cli::Cli, _config: config::Config) -> Result<()> {
-    // API key from CLI arg takes precedence over env/config
-    let api_key = cli
-        .gemini_api_key
-        .clone()
-        .or(_config.gemini_api_key)
-        .ok_or_else(|| anyhow::anyhow!("GEMINI_API_KEY must be set"))?;
-
-    let gemini = gemini::GeminiClient::new(api_key);
-    let mut rx = gemini.ask_stream(&cli.question).await?;
-
-    use gemini::GeminiStreamEvent;
-
-    while let Some(event) = rx.recv().await {
-        match event? {
-            GeminiStreamEvent::Text(text) => {
-                print!("{text}");
-                use std::io::Write;
-                std::io::stdout().flush().ok();
-            }
-            GeminiStreamEvent::Done(metadata) => {
-                println!(); // newline after last text chunk
-
-                if let Some(meta) = metadata {
-                    if let Some(queries) = &meta.web_search_queries {
-                        println!("\nSearch queries: {}", queries.join(", "));
-                    }
-                    if let Some(chunks) = &meta.grounding_chunks {
-                        println!("\nSources:");
-                        // Fire off all redirect resolutions concurrently
-                        let futures: Vec<_> = chunks
-                            .iter()
-                            .map(|chunk| gemini.resolve_redirect(&chunk.web.uri))
-                            .collect();
-                        let urls = join_all(futures).await;
-                        for url in &urls {
-                            println!("  {url}");
-                        }
-                    }
-                }
-            }
+        Engine::Gemini => {
+            let key = get_api_key(
+                cli.gemini_api_key,
+                config.gemini_api_key,
+                "gemini-api-key",
+                "GEMINI_API_KEY",
+            )?;
+            run::<gemini::GeminiClient>(&cli.question, key).await?;
+        }
+        Engine::Claude => {
+            let key = get_api_key(
+                cli.claude_api_key,
+                config.claude_api_key,
+                "claude-api-key",
+                "CLAUDE_API_KEY",
+            )?;
+            run::<claude::ClaudeClient>(&cli.question, key).await?;
+        }
+        Engine::Brave => {
+            let key = get_api_key(
+                cli.brave_api_key,
+                config.brave_api_key,
+                "brave-api-key",
+                "BRAVE_API_KEY",
+            )?;
+            run::<brave::BraveClient>(&cli.question, key).await?;
         }
     }
 
     Ok(())
 }
 
-async fn run_claude(cli: cli::Cli, _config: config::Config) -> Result<()> {
-    let api_key = cli
-        .claude_api_key
-        .clone()
-        .or(_config.claude_api_key)
-        .ok_or_else(|| anyhow::anyhow!("CLAUDE_API_KEY must be set (use --claude-api-key or set CLAUDE_API_KEY env var)"))?;
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
-    let claude = claude::ClaudeClient::new(api_key);
-    let mut rx = claude.ask_stream(&cli.question).await?;
+/// Resolve an API key from CLI arg → config, with a descriptive error.
+fn get_api_key(
+    cli_key: Option<String>,
+    config_key: Option<String>,
+    flag: &str,
+    env: &str,
+) -> Result<String> {
+    cli_key
+        .or(config_key)
+        .ok_or_else(|| anyhow::anyhow!("{env} must be set (use --{flag} or set {env})"))
+}
 
-    use claude::ClaudeStreamEvent;
+/// Run any engine: create the client, stream the response, and print it.
+async fn run<C: StreamClient>(question: &str, api_key: String) -> Result<()> {
+    let client = C::new(api_key);
+    let rx = client.ask_stream(question).await?;
+    let grounding = print_until_done(rx).await?;
 
-    while let Some(event) = rx.recv().await {
-        match event? {
-            ClaudeStreamEvent::Text(text) => {
+    if let Some(g) = grounding {
+        if !g.web_search_queries.is_empty() {
+            println!("\nSearch queries: {}", g.web_search_queries.join(", "));
+        }
+        for source in &g.sources {
+            println!("  {}", source.uri);
+        }
+    }
+
+    Ok(())
+}
+
+/// Print incoming text chunks until `Done`, then return any grounding data.
+async fn print_until_done(
+    mut rx: mpsc::UnboundedReceiver<Result<StreamEvent>>,
+) -> Result<Option<GroundingData>> {
+    use std::io::Write;
+
+    loop {
+        match rx.recv().await {
+            Some(Ok(StreamEvent::Text(text))) => {
                 print!("{text}");
-                use std::io::Write;
                 std::io::stdout().flush().ok();
             }
-            ClaudeStreamEvent::Done => {
+            Some(Ok(StreamEvent::Done(g))) => {
                 println!();
+                return Ok(g);
             }
+            Some(Err(e)) => return Err(e),
+            None => return Ok(None),
         }
     }
-
-    Ok(())
-}
-
-async fn run_brave(cli: cli::Cli, _config: config::Config) -> Result<()> {
-    let api_key = cli
-        .brave_api_key
-        .clone()
-        .or(_config.brave_api_key)
-        .ok_or_else(|| anyhow::anyhow!("BRAVE_API_KEY must be set (use --brave-api-key or set BRAVE_API_KEY env var)"))?;
-
-    let brave = brave::BraveClient::new(api_key);
-    let mut rx = brave.ask_stream(&cli.question).await?;
-
-    use brave::BraveStreamEvent;
-
-    while let Some(event) = rx.recv().await {
-        match event? {
-            BraveStreamEvent::Text(text) => {
-                print!("{text}");
-                use std::io::Write;
-                std::io::stdout().flush().ok();
-            }
-            BraveStreamEvent::Done => {
-                println!();
-            }
-        }
-    }
-
-    Ok(())
 }

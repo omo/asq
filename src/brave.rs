@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
-use serde::Serialize;
+use async_trait::async_trait;
 use tokio::sync::mpsc;
+
+use crate::brave_types::{ChatRequest, Message};
+use crate::stream::{StreamClient, StreamEvent};
 
 /// Brave Chat Completions API client.
 ///
@@ -11,36 +14,9 @@ pub struct BraveClient {
     client: reqwest::Client,
 }
 
-// ─── Request structs ───────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct ChatRequest {
-    stream: bool,
-    messages: Vec<Message>,
-}
-
-#[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: String,
-}
-
-// ─── Public types ─────────────────────────────────────────────────────────
-
-/// An event yielded during streaming from Brave.
-#[derive(Debug)]
-pub enum BraveStreamEvent {
-    /// A text fragment to print immediately.
-    Text(String),
-    /// The response is complete.
-    Done,
-}
-
-// ─── Client implementation ─────────────────────────────────────────────────
-
-impl BraveClient {
-    /// Create a new Brave client.
-    pub fn new(api_key: String) -> Self {
+#[async_trait]
+impl StreamClient for BraveClient {
+    fn new(api_key: String) -> Self {
         Self {
             api_key,
             client: reqwest::Client::new(),
@@ -50,11 +26,11 @@ impl BraveClient {
     /// Ask a question using Brave's chat model, returning a stream of events.
     ///
     /// Text events arrive as the model generates, followed by a final
-    /// `BraveStreamEvent::Done`.
-    pub async fn ask_stream(
+    /// `StreamEvent::Done`.
+    async fn ask_stream(
         &self,
         query: &str,
-    ) -> Result<mpsc::UnboundedReceiver<Result<BraveStreamEvent>>> {
+    ) -> Result<mpsc::UnboundedReceiver<Result<StreamEvent>>> {
         let url = "https://api.search.brave.com/res/v1/chat/completions";
 
         let request = ChatRequest {
@@ -99,17 +75,12 @@ impl BraveClient {
 /// Read SSE events from the response body and send them through the channel.
 async fn read_sse_stream(
     response: reqwest::Response,
-    tx: mpsc::UnboundedSender<Result<BraveStreamEvent>>,
+    tx: mpsc::UnboundedSender<Result<StreamEvent>>,
 ) -> Result<()> {
-    use futures_util::StreamExt;
+    use crate::stream::parse_data_line;
     use tokio::io::AsyncBufReadExt;
-    use tokio_util::io::StreamReader;
 
-    let stream = response.bytes_stream();
-    let reader = StreamReader::new(
-        stream.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
-    );
-    let mut lines = tokio::io::BufReader::new(reader).lines();
+    let mut lines = crate::stream::line_reader(response).lines();
 
     while let Some(line) = lines.next_line().await? {
         let line = line.trim().to_string();
@@ -120,19 +91,14 @@ async fn read_sse_stream(
 
         // SSE end marker
         if line == "[DONE]" {
-            let _ = tx.send(Ok(BraveStreamEvent::Done));
+            let _ = tx.send(Ok(StreamEvent::Done(None)));
             return Ok(());
         }
 
-        // SSE data lines start with "data: "
-        let json_str = match line.strip_prefix("data: ") {
+        let json_str = match parse_data_line(&line) {
             Some(s) => s,
             None => continue,
         };
-
-        if json_str.is_empty() {
-            continue;
-        }
 
         // Parse the JSON chunk
         let chunk: serde_json::Value = match serde_json::from_str(json_str) {
@@ -151,7 +117,7 @@ async fn read_sse_stream(
                 // Check finish_reason first
                 if let Some(finish) = choice.get("finish_reason") {
                     if finish.is_string() && finish.as_str().unwrap_or("") == "stop" {
-                        let _ = tx.send(Ok(BraveStreamEvent::Done));
+                        let _ = tx.send(Ok(StreamEvent::Done(None)));
                         return Ok(());
                     }
                 }
@@ -167,7 +133,7 @@ async fn read_sse_stream(
                         if content.starts_with("<usage>") {
                             continue;
                         }
-                        if tx.send(Ok(BraveStreamEvent::Text(content.to_string()))).is_err() {
+                        if tx.send(Ok(StreamEvent::Text(content.to_string()))).is_err() {
                             return Ok(()); // receiver dropped
                         }
                     }
@@ -177,6 +143,6 @@ async fn read_sse_stream(
     }
 
     // Stream ended without a [DONE] or finish_reason
-    let _ = tx.send(Ok(BraveStreamEvent::Done));
+    let _ = tx.send(Ok(StreamEvent::Done(None)));
     Ok(())
 }
