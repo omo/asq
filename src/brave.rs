@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::brave_types::{ChatRequest, Message};
+use crate::brave_types::{ChatRequest, Message, SseChunk};
 use crate::stream::{StreamClient, StreamEvent};
 
 /// Brave Chat Completions API client.
@@ -79,6 +79,9 @@ impl StreamClient for BraveClient {
 
 impl BraveClient {
     /// Read SSE events from the response body and send them through the channel.
+    ///
+    /// Uses typed deserialization (see [`SseChunk`]) instead of raw
+    /// `serde_json::Value` access.
     async fn read_sse_stream<R: tokio::io::AsyncBufRead + Send + Unpin>(
         reader: R,
         tx: mpsc::UnboundedSender<Result<StreamEvent>>,
@@ -102,9 +105,8 @@ impl BraveClient {
                 return Ok(());
             }
 
-            // Parse the JSON chunk
-            let chunk: serde_json::Value = match serde_json::from_str(json_str) {
-                Ok(v) => v,
+            let chunk: SseChunk = match serde_json::from_str(json_str) {
+                Ok(c) => c,
                 Err(e) => {
                     let _ = tx.send(Err(anyhow::anyhow!(
                         "Failed to parse Brave SSE JSON: {e}"
@@ -113,34 +115,25 @@ impl BraveClient {
                 }
             };
 
-            // Extract text delta from choices[0].delta.content
-            if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
-                for choice in choices {
-                    // Extract content delta first — the final chunk often
-                    // carries both text and finish_reason.
-                    if let Some(content) = choice
-                        .get("delta")
-                        .and_then(|d| d.get("content"))
-                        .and_then(|c| c.as_str())
-                    {
-                        if !content.is_empty() {
-                            // Skip usage/cost metadata embedded as <usage>...</usage>
-                            if content.starts_with("<usage>") {
-                                continue;
-                            }
-                            if tx.send(Ok(StreamEvent::Text(content.to_string()))).is_err() {
-                                return Ok(()); // receiver dropped
-                            }
+            for choice in chunk.choices {
+                // Extract content delta first — the final chunk often
+                // carries both text and finish_reason.
+                if let Some(content) = &choice.delta.content {
+                    if !content.is_empty() {
+                        // Skip usage/cost metadata embedded as <usage>...</usage>
+                        if content.starts_with("<usage>") {
+                            continue;
+                        }
+                        if tx.send(Ok(StreamEvent::Text(content.clone()))).is_err() {
+                            return Ok(()); // receiver dropped
                         }
                     }
+                }
 
-                    // Check finish_reason after extracting text
-                    if let Some(finish) = choice.get("finish_reason") {
-                        if finish.is_string() && finish.as_str().unwrap_or("") == "stop" {
-                            let _ = tx.send(Ok(StreamEvent::Done(None)));
-                            return Ok(());
-                        }
-                    }
+                // Check finish_reason after extracting text
+                if choice.finish_reason.as_deref() == Some("stop") {
+                    let _ = tx.send(Ok(StreamEvent::Done(None)));
+                    return Ok(());
                 }
             }
         }
