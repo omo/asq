@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::claude_types::{Message, MessagesRequest, Tool};
+use crate::claude_types::{ContentBlock, Delta, Message, MessagesRequest, SseEvent, Tool};
 use crate::stream::{GroundingData, Source, StreamClient, StreamEvent};
 
 /// Claude API client using Anthropic's Messages API with streaming.
@@ -86,11 +86,8 @@ impl ClaudeClient {
     ///   event: content_block_delta
     ///   data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"..."}}
     ///
-    /// With web_search tool we also get:
-    ///   - content_block_start with type: "server_tool_use" or "web_search_tool_result"
-    ///   - content_block_delta with type: "input_json_delta" (tool query)
-    ///   - content_block_delta with type: "citations_delta"
-    ///   - content_block_delta with type: "thinking_delta"
+    /// Uses typed deserialization (see [`SseEvent`]) instead of raw
+    /// `serde_json::Value` access.
     async fn read_sse_stream<R: tokio::io::AsyncBufRead + Send + Unpin>(
         reader: R,
         tx: mpsc::UnboundedSender<Result<StreamEvent>>,
@@ -101,26 +98,17 @@ impl ClaudeClient {
 
         let mut lines = reader.lines();
 
-        // Track the current event type (from `event:` lines)
-        let mut current_event = String::new();
         // Collect citations for the final Done event
         let mut sources: Vec<Source> = Vec::new();
 
         while let Some(line) = lines.next_line().await? {
-            let line = line.trim().to_string();
-
-            if let Some(event_type) = line.strip_prefix("event: ") {
-                current_event = event_type.to_string();
-                continue;
-            }
-
-            let json_str = match parse_data_line(&line) {
+            let json_str = match parse_data_line(line.trim()) {
                 Some(s) => s,
                 None => continue,
             };
 
-            let payload: serde_json::Value = match serde_json::from_str(json_str) {
-                Ok(v) => v,
+            let event: SseEvent = match serde_json::from_str(json_str) {
+                Ok(e) => e,
                 Err(e) => {
                     let _ = tx.send(Err(anyhow::anyhow!(
                         "Failed to parse Claude SSE JSON: {e}"
@@ -129,77 +117,43 @@ impl ClaudeClient {
                 }
             };
 
-            match current_event.as_str() {
-                "content_block_start" => {
-                    // If a text block starts with pre-existing citations, collect them
-                    let block_type = payload
-                        .get("content_block")
-                        .and_then(|b| b.get("type"))
-                        .and_then(|t| t.as_str());
-                    if block_type == Some("text") {
-                        if let Some(citations) = payload
-                            .get("content_block")
-                            .and_then(|b| b.get("citations"))
-                            .and_then(|c| c.as_array())
-                        {
-                            for citation in citations {
-                                if let Some(url) = citation.get("url").and_then(|u| u.as_str()) {
-                                    if !url.is_empty() {
-                                        sources.push(Source { uri: url.to_string() });
-                                    }
-                                }
-                            }
+            match event {
+                SseEvent::ContentBlockStart {
+                    content_block:
+                        ContentBlock::Text(text_block),
+                    ..
+                } => {
+                    // Collect pre-existing citations from the text block
+                    for citation in text_block.citations {
+                        if !citation.url.is_empty() {
+                            sources.push(Source {
+                                uri: citation.url,
+                            });
                         }
                     }
                 }
-                "content_block_delta" => {
-                    let delta_type = payload
-                        .get("delta")
-                        .and_then(|d| d.get("type"))
-                        .and_then(|t| t.as_str());
-
-                    match delta_type {
-                        Some("text_delta") => {
-                            // Extract text from delta
-                            if let Some(text) = payload
-                                .get("delta")
-                                .and_then(|d| d.get("text"))
-                                .and_then(|t| t.as_str())
+                SseEvent::ContentBlockDelta { delta, .. } => match delta {
+                    Delta::Text(td) => {
+                        if !td.text.is_empty() {
+                            if tx
+                                .send(Ok(StreamEvent::Text(td.text)))
+                                .is_err()
                             {
-                                if !text.is_empty() {
-                                    if tx.send(Ok(StreamEvent::Text(text.to_string()))).is_err() {
-                                        return Ok(()); // receiver dropped
-                                    }
-                                }
+                                return Ok(()); // receiver dropped
                             }
                         }
-                        Some("citations_delta") => {
-                            // Collect citation (URL only, drop title for consistency)
-                            if let Some(citation) = payload.get("delta").and_then(|d| d.get("citation"))
-                            {
-                                if let Some(url) = citation.get("url").and_then(|u| u.as_str()) {
-                                    if !url.is_empty() {
-                                        sources.push(Source { uri: url.to_string() });
-                                    }
-                                }
-                            }
-                        }
-                        Some("thinking_delta") | Some("signature_delta") => {
-                            // Ignore thinking/signature blocks
-                        }
-                        Some("input_json_delta") => {
-                            // Search query being constructed — ignore
-                        }
-                        _ => {}
                     }
-                }
-                "content_block_stop" => {
-                    // No-op, block ended
-                }
-                "message_delta" => {
-                    // Could check stop_reason here if needed
-                }
-                "message_stop" => {
+                    Delta::Citations(cd) => {
+                        if !cd.citation.url.is_empty() {
+                            sources.push(Source {
+                                uri: cd.citation.url,
+                            });
+                        }
+                    }
+                    // Ignore thinking / signature / input_json deltas
+                    Delta::Thinking | Delta::Signature | Delta::InputJson => {}
+                },
+                SseEvent::MessageStop => {
                     let grounding = Some(GroundingData {
                         web_search_queries: vec![query.to_string()],
                         sources,
@@ -207,9 +161,8 @@ impl ClaudeClient {
                     let _ = tx.send(Ok(StreamEvent::Done(grounding)));
                     return Ok(());
                 }
-                _ => {
-                    // Ignore: message_start, ping
-                }
+                // Ignore: content_block_stop, message_start, message_delta, ping
+                _ => {}
             }
         }
 
@@ -228,7 +181,9 @@ mod tests {
     async fn parse_bytes(data: &[u8]) -> Vec<StreamEvent> {
         let reader = tokio::io::BufReader::new(std::io::Cursor::new(data.to_vec()));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        ClaudeClient::read_sse_stream(reader, tx, "test query").await.unwrap();
+        ClaudeClient::read_sse_stream(reader, tx, "test query")
+            .await
+            .unwrap();
 
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
@@ -364,7 +319,9 @@ data: {not json}
 "#.to_vec(),
         ));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        ClaudeClient::read_sse_stream(reader, tx, "q").await.unwrap();
+        ClaudeClient::read_sse_stream(reader, tx, "q")
+            .await
+            .unwrap();
 
         let event = rx.recv().await;
         assert!(event.is_some());
