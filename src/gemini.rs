@@ -109,21 +109,18 @@ async fn resolve_sources(client: &reqwest::Client, sources: &mut [Source]) {
 // ─── SSE parsing (used by ask_stream, testable with in-memory readers) ─────
 
 impl GeminiClient {
-    /// Read SSE events, resolve grounding redirects, and send them through the channel.
-    async fn read_sse_stream<R: tokio::io::AsyncBufRead + Send + Unpin>(
+    /// Pure SSE parser: emit Text events, return raw GroundingMetadata on finish.
+    async fn parse_events<R: tokio::io::AsyncBufRead + Send + Unpin>(
         reader: R,
-        http_client: reqwest::Client,
-        tx: mpsc::UnboundedSender<Result<StreamEvent>>,
-    ) -> Result<()> {
+        tx: &mpsc::UnboundedSender<Result<StreamEvent>>,
+    ) -> Result<Option<crate::gemini_types::GroundingMetadata>> {
         use crate::stream::parse_data_line;
         use tokio::io::AsyncBufReadExt;
 
         let mut lines = reader.lines();
 
         while let Some(line) = lines.next_line().await? {
-            let line = line.trim().to_string();
-
-            let json_str = match parse_data_line(&line) {
+            let json_str = match parse_data_line(line.trim()) {
                 Some(s) => s,
                 None => continue,
             };
@@ -132,7 +129,7 @@ impl GeminiClient {
                 Ok(e) => e,
                 Err(e) => {
                     let _ = tx.send(Err(anyhow::anyhow!("Failed to parse SSE JSON: {e}")));
-                    return Ok(());
+                    return Ok(None);
                 }
             };
 
@@ -142,32 +139,45 @@ impl GeminiClient {
             };
 
             for candidate in candidates {
-                if let Some(content) = candidate.content {
-                    if let Some(parts) = content.parts {
-                        for part in parts {
-                            if let Some(text) = part.text {
-                                if !text.is_empty() {
-                                    if tx.send(Ok(StreamEvent::Text(text))).is_err() {
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                        }
+                for text in Self::text_strings(&candidate) {
+                    if tx.send(Ok(StreamEvent::Text(text.to_string()))).is_err() {
+                        return Ok(None);
                     }
                 }
 
                 if candidate.finish_reason.is_some() {
-                    let mut grounding = candidate.grounding_metadata.map(convert_grounding);
-                    if let Some(ref mut g) = grounding {
-                        resolve_sources(&http_client, &mut g.sources).await;
-                    }
-                    let _ = tx.send(Ok(StreamEvent::Done(grounding)));
-                    return Ok(());
+                    return Ok(candidate.grounding_metadata);
                 }
             }
         }
 
-        let _ = tx.send(Ok(StreamEvent::Done(None)));
+        Ok(None)
+    }
+
+    /// Return an iterator over non-empty text strings from a candidate.
+    fn text_strings(candidate: &crate::gemini_types::StreamCandidate) -> impl Iterator<Item = &str> {
+        candidate
+            .content
+            .as_ref()
+            .and_then(|c| c.parts.as_ref())
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.text.as_deref())
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Read SSE events, resolve grounding redirects, and send them through the channel.
+    async fn read_sse_stream<R: tokio::io::AsyncBufRead + Send + Unpin>(
+        reader: R,
+        http_client: reqwest::Client,
+        tx: mpsc::UnboundedSender<Result<StreamEvent>>,
+    ) -> Result<()> {
+        let raw_meta = Self::parse_events(reader, &tx).await?;
+        let mut grounding = raw_meta.map(convert_grounding);
+        if let Some(ref mut g) = grounding {
+            resolve_sources(&http_client, &mut g.sources).await;
+        }
+        let _ = tx.send(Ok(StreamEvent::Done(grounding)));
         Ok(())
     }
 }
@@ -177,24 +187,21 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    /// Helper: feed bytes through the Gemini SSE parser and collect all events.
-    /// Uses a reqwest::Client with a short timeout; resolve_sources will fail
-    /// gracefully on fake test URLs (falling back to the original URI).
+    /// Helper: feed bytes through the pure SSE parser and collect all events.
     async fn parse_bytes(data: &[u8]) -> Vec<StreamEvent> {
         let reader = tokio::io::BufReader::new(std::io::Cursor::new(data.to_vec()));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(100))
-            .build()
-            .unwrap();
-        GeminiClient::read_sse_stream(reader, client, tx)
-            .await
-            .unwrap();
 
-        let mut events = Vec::new();
+        let raw_meta = GeminiClient::parse_events(reader, &tx).await.unwrap();
+        drop(tx); // close channel so rx.recv() returns None when drained
+
+        let mut events: Vec<StreamEvent> = Vec::new();
         while let Some(event) = rx.recv().await {
             events.push(event.unwrap());
         }
+
+        let grounding = raw_meta.map(convert_grounding);
+        events.push(StreamEvent::Done(grounding));
         events
     }
 
@@ -229,8 +236,8 @@ data: {"candidates":[{"content":{},"finishReason":"STOP"}]}
 
     #[tokio::test]
     async fn finish_reason_with_grounding() {
-        // Use a .test domain (reserved, guaranteed to fail DNS) so
-        // resolve_sources falls back to the original URI.
+        // parse_bytes uses parse_events (pure) + convert_grounding, so the raw
+        // URI is preserved as-is (no redirect resolution in test helpers).
         let data = br#"data: {"candidates":[{"content":{"parts":[{"text":"result"}]},"finishReason":"STOP","groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://nonexistent.test/page","title":"Ex"}}],"webSearchQueries":["test query"]}}]}
 "#;
         let events = parse_bytes(data).await;
