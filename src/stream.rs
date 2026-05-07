@@ -140,8 +140,8 @@ pub enum StreamEvent {
 /// handle responses uniformly regardless of the backend.
 #[async_trait]
 pub trait StreamClient: Send + Sync {
-    /// Create a new client with the given API key.
-    fn new(api_key: String) -> Self
+    /// Create a new client with the given API key and optional system prompt.
+    fn new(api_key: String, system_prompt: Option<String>) -> Self
     where
         Self: Sized;
 

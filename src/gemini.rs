@@ -4,7 +4,8 @@ use futures_util::future::join_all;
 use tokio::sync::mpsc;
 
 use crate::gemini_types::{
-    Content, GenerateContentRequest, GoogleSearchTool, Part, StreamEvent as RawEvent, Tool,
+    Content, GenerateContentRequest, GoogleSearchTool, Part, StreamEvent as RawEvent,
+    SystemInstruction, SystemPart, Tool,
 };
 use crate::stream::{GroundingData, Source, StreamEvent, StreamClient};
 
@@ -12,14 +13,16 @@ use crate::stream::{GroundingData, Source, StreamEvent, StreamClient};
 pub struct GeminiClient {
     api_key: String,
     client: reqwest::Client,
+    system_prompt: Option<String>,
 }
 
 #[async_trait]
 impl StreamClient for GeminiClient {
-    fn new(api_key: String) -> Self {
+    fn new(api_key: String, system_prompt: Option<String>) -> Self {
         Self {
             api_key,
             client: reqwest::Client::new(),
+            system_prompt,
         }
     }
 
@@ -32,7 +35,16 @@ impl StreamClient for GeminiClient {
             self.api_key
         );
 
+        let system_instruction = self.system_prompt.as_ref().map(|text| {
+            SystemInstruction {
+                parts: vec![SystemPart {
+                    text: text.clone(),
+                }],
+            }
+        });
+
         let request = GenerateContentRequest {
+            system_instruction,
             contents: vec![Content {
                 parts: vec![Part {
                     text: query.to_string(),

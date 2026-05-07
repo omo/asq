@@ -10,6 +10,8 @@ pub(crate) struct MessagesRequest {
     pub(crate) model: String,
     pub(crate) max_tokens: u32,
     pub(crate) stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) system: Option<String>,
     pub(crate) messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<Tool>>,
@@ -139,6 +141,7 @@ mod tests {
             model: "claude-sonnet-4-6".into(),
             max_tokens: 4096,
             stream: true,
+            system: None,
             messages: vec![Message {
                 role: "user".into(),
                 content: "hello".into(),
@@ -163,6 +166,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 100,
             stream: false,
+            system: None,
             messages: vec![Message {
                 role: "user".into(),
                 content: "q".into(),

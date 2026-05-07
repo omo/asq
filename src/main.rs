@@ -66,7 +66,7 @@ fn get_api_key(key: Option<String>, env: &str) -> Result<String> {
     key.ok_or_else(|| anyhow::anyhow!("{env} must be set (use --{env} or set the {env} env var)"))
 }
 
-/// Default system prompt used when --system-prompt is not provided.
+/// Default system prompt used when --system-prompt is not provided and --terse is not set.
 /// Ignored by the Brave engine which does not support system instructions.
 const DEFAULT_SYSTEM_PROMPT: &str = "\
 - DO NOT use markdown. No section, emphasis, link. Make it easy to read as-is.\n\
@@ -77,7 +77,18 @@ const DEFAULT_SYSTEM_PROMPT: &str = "\
 - If the question is programming related, include sample code when it makes sense.
 ";
 
-/// Resolve the system prompt: CLI flag > built-in default.
+/// Terse system prompt used when --terse is set (unless --system-prompt overrides it).
+/// Asks the model to give only the bare essential answer.
+const TERSE_SYSTEM_PROMPT: &str = "\
+- Be extremely terse. Answer with only the essential: a number, yes/no, a single word, or at most one sentence.\n\
+- DO NOT use markdown, lists, citations, code blocks, or any formatting.\n\
+- Give the raw answer and nothing else — no explanations, no follow-ups.
+";
+
+/// Resolve the system prompt in priority order:
+/// 1. Explicit --system-prompt (highest priority)
+/// 2. --terse flag (uses TERSE_SYSTEM_PROMPT)
+/// 3. Built-in DEFAULT_SYSTEM_PROMPT
 /// Returns None for the Brave engine (not supported).
 fn resolve_system_prompt(cli: &cli::Cli) -> Option<String> {
     if matches!(cli.engine, cli::Engine::Brave) {
@@ -86,6 +97,9 @@ fn resolve_system_prompt(cli: &cli::Cli) -> Option<String> {
     Some(
         cli.system_prompt
             .clone()
+            .or_else(|| {
+                cli.terse.then(|| TERSE_SYSTEM_PROMPT.to_string())
+            })
             .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string()),
     )
 }

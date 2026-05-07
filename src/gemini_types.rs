@@ -4,8 +4,20 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct GenerateContentRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) system_instruction: Option<SystemInstruction>,
     pub(crate) contents: Vec<Content>,
     pub(crate) tools: Vec<Tool>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SystemInstruction {
+    pub(crate) parts: Vec<SystemPart>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SystemPart {
+    pub(crate) text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +121,7 @@ mod tests {
     #[test]
     fn generate_content_request_serializes() {
         let req = GenerateContentRequest {
+            system_instruction: None,
             contents: vec![Content {
                 parts: vec![Part {
                     text: "hello".into(),

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize)]
 pub(crate) struct GptRequest {
     pub(crate) model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) instructions: Option<String>,
     pub(crate) input: Vec<InputMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<Tool>>,
@@ -132,6 +134,7 @@ mod tests {
     fn gpt_request_with_tools_serializes() {
         let req = GptRequest {
             model: "gpt-5.4-mini".into(),
+            instructions: None,
             input: vec![InputMessage {
                 role: "user".into(),
                 content: "hello".into(),
@@ -156,6 +159,7 @@ mod tests {
     fn gpt_request_without_tools() {
         let req = GptRequest {
             model: "gpt-5.4-mini".into(),
+            instructions: None,
             input: vec![InputMessage {
                 role: "user".into(),
                 content: "q".into(),

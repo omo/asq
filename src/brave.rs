@@ -12,14 +12,17 @@ use crate::stream::{StreamClient, StreamEvent};
 pub struct BraveClient {
     api_key: String,
     client: reqwest::Client,
+    #[allow(dead_code)]
+    system_prompt: Option<String>,
 }
 
 #[async_trait]
 impl StreamClient for BraveClient {
-    fn new(api_key: String) -> Self {
+    fn new(api_key: String, system_prompt: Option<String>) -> Self {
         Self {
             api_key,
             client: reqwest::Client::new(),
+            system_prompt,
         }
     }
 

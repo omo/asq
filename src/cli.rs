@@ -11,6 +11,15 @@ pub struct Cli {
     #[arg(long, short, value_enum, default_value_t = Engine::Gemini)]
     pub engine: Engine,
 
+    /// System instruction for the AI model (ignored by Brave). Overrides the built-in default.
+    #[arg(long = "system-prompt")]
+    pub system_prompt: Option<String>,
+
+    /// Terse mode: make the output extremely short (a number, yes/no, a sentence, etc.).
+    /// Ignored when --system-prompt is explicitly provided.
+    #[arg(long, short, default_value_t = false)]
+    pub terse: bool,
+
     /// Brave Search API key (overrides BRAVE_API_KEY env var).
     #[arg(long, env = "BRAVE_API_KEY")]
     pub brave_api_key: Option<String>,

@@ -11,14 +11,16 @@ use crate::stream::{GroundingData, Source, StreamClient, StreamEvent};
 pub struct GptClient {
     api_key: String,
     client: reqwest::Client,
+    system_prompt: Option<String>,
 }
 
 #[async_trait]
 impl StreamClient for GptClient {
-    fn new(api_key: String) -> Self {
+    fn new(api_key: String, system_prompt: Option<String>) -> Self {
         Self {
             api_key,
             client: reqwest::Client::new(),
+            system_prompt,
         }
     }
 
@@ -30,6 +32,7 @@ impl StreamClient for GptClient {
 
         let request = GptRequest {
             model: "gpt-5.4-mini".to_string(),
+            instructions: self.system_prompt.clone(),
             max_output_tokens: Some(4096),
             stream: true,
             input: vec![InputMessage {

@@ -9,14 +9,16 @@ use crate::stream::{GroundingData, Source, StreamClient, StreamEvent};
 pub struct ClaudeClient {
     api_key: String,
     client: reqwest::Client,
+    system_prompt: Option<String>,
 }
 
 #[async_trait]
 impl StreamClient for ClaudeClient {
-    fn new(api_key: String) -> Self {
+    fn new(api_key: String, system_prompt: Option<String>) -> Self {
         Self {
             api_key,
             client: reqwest::Client::new(),
+            system_prompt,
         }
     }
 
@@ -34,6 +36,7 @@ impl StreamClient for ClaudeClient {
             model: "claude-sonnet-4-6".to_string(),
             max_tokens: 4096,
             stream: true,
+            system: self.system_prompt.clone(),
             messages: vec![Message {
                 role: "user".to_string(),
                 content: query.to_string(),
