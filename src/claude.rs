@@ -109,10 +109,6 @@ impl ClaudeClient {
         while let Some(line) = lines.next_line().await? {
             let line = line.trim().to_string();
 
-            if line.is_empty() {
-                continue;
-            }
-
             if let Some(event_type) = line.strip_prefix("event: ") {
                 current_event = event_type.to_string();
                 continue;

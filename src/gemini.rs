@@ -123,10 +123,6 @@ impl GeminiClient {
         while let Some(line) = lines.next_line().await? {
             let line = line.trim().to_string();
 
-            if line.is_empty() {
-                continue;
-            }
-
             let json_str = match parse_data_line(&line) {
                 Some(s) => s,
                 None => continue,

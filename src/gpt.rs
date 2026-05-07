@@ -90,18 +90,10 @@ impl GptClient {
         use tokio::io::AsyncBufReadExt;
 
         let mut lines = reader.lines();
-        // Collect search queries and sources from the final response
         let mut search_queries: Vec<String> = Vec::new();
-        let mut sources: Vec<Source> = Vec::new();
 
         while let Some(line) = lines.next_line().await? {
-            let line = line.trim().to_string();
-
-            if line.is_empty() {
-                continue;
-            }
-
-            let json_str = match parse_data_line(&line) {
+            let json_str = match parse_data_line(line.trim()) {
                 Some(s) => s,
                 None => continue,
             };
@@ -118,78 +110,86 @@ impl GptClient {
 
             match event.event_type.as_str() {
                 "response.output_text.delta" => {
-                    if let Some(text) = event.delta {
-                        if !text.is_empty() {
-                            if tx.send(Ok(StreamEvent::Text(text))).is_err() {
-                                return Ok(()); // receiver dropped
-                            }
+                    if let Some(text) = event.delta.filter(|t| !t.is_empty()) {
+                        if tx.send(Ok(StreamEvent::Text(text))).is_err() {
+                            return Ok(()); // receiver dropped
                         }
                     }
                 }
                 "response.output_item.done" => {
-                    // Extract search queries from web_search_call items
-                    if let Some(item) = event.item {
-                        if let OutputItem::WebSearchCall(w) = item {
-                            if let Some(action) = w.action {
-                                // Collect individual queries
-                                if let Some(q) = action.query {
-                                    if !q.is_empty() && !search_queries.contains(&q) {
-                                        search_queries.push(q);
-                                    }
-                                }
-                                // Also collect from queries array
-                                if let Some(queries) = action.queries {
-                                    for q in queries {
-                                        if !q.is_empty() && !search_queries.contains(&q) {
-                                            search_queries.push(q);
-                                        }
-                                    }
-                                }
-                            }
+                    for q in Self::web_search_queries(&event) {
+                        if !search_queries.contains(&q) {
+                            search_queries.push(q);
                         }
                     }
                 }
                 "response.completed" => {
-                    // Extract sources from annotations in the completed response
-                    if let Some(resp) = event.response {
-                        for item in resp.output {
-                            if let OutputItem::Message(msg) = item {
-                                for content in msg.content {
-                                    let ContentPart::OutputText(text) = content;
-                                    for annotation in text.annotations {
-                                        if let Some(url) = annotation.url {
-                                            if !url.is_empty() {
-                                                sources.push(Source { uri: url });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let grounding = if search_queries.is_empty() && sources.is_empty() {
-                        None
-                    } else {
-                        Some(GroundingData {
-                            web_search_queries: search_queries,
-                            sources,
-                        })
-                    };
-                    let _ = tx.send(Ok(StreamEvent::Done(grounding)));
+                    let sources: Vec<Source> = Self::source_urls(&event)
+                        .map(|url| Source { uri: url.to_string() })
+                        .collect();
+                    let _ = tx.send(Ok(StreamEvent::Done(build_grounding(
+                        search_queries, sources,
+                    ))));
                     return Ok(());
                 }
-                _ => {
-                    // Ignore: response.created, response.in_progress,
-                    // response.web_search_call.*, response.content_part.*,
-                    // response.output_item.added
-                }
+                _ => {}
             }
         }
 
         // Stream ended without response.completed
         let _ = tx.send(Ok(StreamEvent::Done(None)));
         Ok(())
+    }
+
+    /// Return an iterator over non-empty web search query strings from a
+    /// `response.output_item.done` event.
+    fn web_search_queries(event: &SseEvent) -> Box<dyn Iterator<Item = String> + '_> {
+        let Some(OutputItem::WebSearchCall(w)) = &event.item else {
+            return Box::new(std::iter::empty());
+        };
+        let Some(action) = &w.action else {
+            return Box::new(std::iter::empty());
+        };
+
+        let single = action.query.iter().cloned();
+        let bulk = action.queries.iter().flat_map(|qs| qs.iter().cloned());
+        Box::new(single.chain(bulk).filter(|q| !q.is_empty()))
+    }
+
+    /// Return an iterator over non-empty source URLs from annotations in a
+    /// `response.completed` event.
+    fn source_urls(event: &SseEvent) -> Box<dyn Iterator<Item = &str> + '_> {
+        let Some(resp) = &event.response else {
+            return Box::new(std::iter::empty());
+        };
+
+        Box::new(
+            resp.output
+                .iter()
+                .filter_map(|item| match item {
+                    OutputItem::Message(msg) => Some(msg),
+                    _ => None,
+                })
+                .flat_map(|msg| &msg.content)
+                .filter_map(|content| match content {
+                    ContentPart::OutputText(text) => Some(text),
+                })
+                .flat_map(|text| &text.annotations)
+                .filter_map(|ann| ann.url.as_deref())
+                .filter(|url| !url.is_empty()),
+        )
+    }
+}
+
+/// Build optional grounding data from collected queries and sources.
+fn build_grounding(queries: Vec<String>, sources: Vec<Source>) -> Option<GroundingData> {
+    if queries.is_empty() && sources.is_empty() {
+        None
+    } else {
+        Some(GroundingData {
+            web_search_queries: queries,
+            sources,
+        })
     }
 }
 
