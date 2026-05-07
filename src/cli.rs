@@ -22,6 +22,10 @@ pub struct Cli {
     /// Claude API key (overrides CLAUDE_API_KEY env var).
     #[arg(long, env = "CLAUDE_API_KEY")]
     pub claude_api_key: Option<String>,
+
+    /// OpenAI API key (overrides OPENAI_API_KEY env var).
+    #[arg(long, env = "OPENAI_API_KEY")]
+    pub gpt_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
@@ -32,6 +36,8 @@ pub enum Engine {
     Brave,
     /// Anthropic's Claude Sonnet.
     Claude,
+    /// OpenAI GPT.
+    Gpt,
 }
 
 impl Cli {

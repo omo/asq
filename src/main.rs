@@ -5,6 +5,8 @@ mod claude_types;
 mod cli;
 mod gemini;
 mod gemini_types;
+mod gpt;
+mod gpt_types;
 mod stream;
 
 use anyhow::Result;
@@ -31,6 +33,10 @@ async fn main() -> Result<()> {
         Engine::Brave => {
             let key = get_api_key(cli.brave_api_key, "BRAVE_API_KEY")?;
             run::<brave::BraveClient>(&cli.question, key).await?;
+        }
+        Engine::Gpt => {
+            let key = get_api_key(cli.gpt_api_key, "OPENAI_API_KEY")?;
+            run::<gpt::GptClient>(&cli.question, key).await?;
         }
     }
 
