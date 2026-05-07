@@ -21,22 +21,24 @@ async fn main() -> Result<()> {
     load_env();
     let cli = cli::Cli::parse();
 
+    let system_prompt = resolve_system_prompt(&cli);
+
     match cli.engine {
         Engine::Gemini => {
             let key = get_api_key(cli.gemini_api_key, "GEMINI_API_KEY")?;
-            run::<gemini::GeminiClient>(&cli.question, key).await?;
+            run::<gemini::GeminiClient>(&cli.question, key, system_prompt.clone()).await?;
         }
         Engine::Claude => {
             let key = get_api_key(cli.claude_api_key, "CLAUDE_API_KEY")?;
-            run::<claude::ClaudeClient>(&cli.question, key).await?;
+            run::<claude::ClaudeClient>(&cli.question, key, system_prompt.clone()).await?;
         }
         Engine::Brave => {
             let key = get_api_key(cli.brave_api_key, "BRAVE_API_KEY")?;
-            run::<brave::BraveClient>(&cli.question, key).await?;
+            run::<brave::BraveClient>(&cli.question, key, system_prompt.clone()).await?;
         }
         Engine::Gpt => {
             let key = get_api_key(cli.gpt_api_key, "OPENAI_API_KEY")?;
-            run::<gpt::GptClient>(&cli.question, key).await?;
+            run::<gpt::GptClient>(&cli.question, key, system_prompt.clone()).await?;
         }
     }
 
@@ -64,9 +66,33 @@ fn get_api_key(key: Option<String>, env: &str) -> Result<String> {
     key.ok_or_else(|| anyhow::anyhow!("{env} must be set (use --{env} or set the {env} env var)"))
 }
 
+/// Default system prompt used when --system-prompt is not provided.
+/// Ignored by the Brave engine which does not support system instructions.
+const DEFAULT_SYSTEM_PROMPT: &str = "\
+- DO NOT use markdown. No section, emphasis, link. Make it easy to read as-is.\n\
+- DO NOT have citation URL in the main content.\n\
+- DO NOT add follow up suggestion. This conversation is one-shot.\n\
+- Be concise.\n\
+- You can use bullet list but only sparingly.\n\
+- If the question is programming related, include sample code when it makes sense.
+";
+
+/// Resolve the system prompt: CLI flag > built-in default.
+/// Returns None for the Brave engine (not supported).
+fn resolve_system_prompt(cli: &cli::Cli) -> Option<String> {
+    if matches!(cli.engine, cli::Engine::Brave) {
+        return None;
+    }
+    Some(
+        cli.system_prompt
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string()),
+    )
+}
+
 /// Run any engine: create the client, stream the response, and print it.
-async fn run<C: StreamClient>(question: &str, api_key: String) -> Result<()> {
-    let client = C::new(api_key);
+async fn run<C: StreamClient>(question: &str, api_key: String, system_prompt: Option<String>) -> Result<()> {
+    let client = C::new(api_key, system_prompt);
     let rx = client.ask_stream(question).await?;
     let grounding = print_until_done(rx).await?;
 
