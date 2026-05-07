@@ -46,6 +46,8 @@ asq [OPTIONS] <QUESTION>
 | `--claude-api-key <KEY>` | Claude API key (or set `CLAUDE_API_KEY`) |
 | `--gpt-api-key <KEY>` | OpenAI API key (or set `OPENAI_API_KEY`) |
 | `--brave-api-key <KEY>` | Brave API key (or set `BRAVE_API_KEY`) |
+| `--system-prompt <TEXT>` | Custom system prompt (overrides built-in default. Ignored by Brave) |
+| `-t`, `--terse` | Terse mode: answer with only the essential (a number, yes/no, one sentence) |
 
 ### Engines
 
@@ -63,6 +65,9 @@ asq "when is the next total solar eclipse"
 asq -e claude "rust async trait Send bound workaround"
 
 asq -e gpt --gpt-api-key $OPENAI_KEY "What's new in PostgreSQL 18"
+
+asq -t "what is 7*8"
+# 56
 ```
 
 ## How it works
